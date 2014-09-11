@@ -395,6 +395,7 @@ protected:
 
   // trim cache.
   void trim_cache();
+  void trim_cache_for_reconnect(MetaSession *s);
   void trim_dentry(Dentry *dn);
   void trim_caps(MetaSession *s, int max);
   
