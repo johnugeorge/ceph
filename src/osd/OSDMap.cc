@@ -16,12 +16,10 @@
  */
 
 #include "OSDMap.h"
-
 #include "common/config.h"
 #include "common/Formatter.h"
 #include "include/ceph_features.h"
 #include "include/str_map.h"
-
 #include "common/code_environment.h"
 
 #define dout_subsys ceph_subsys_osd
@@ -419,6 +417,7 @@ void OSDMap::Incremental::encode(bufferlist& bl, uint64_t features) const
     ::encode(new_pg_temp, bl);
     ::encode(new_primary_temp, bl);
     ::encode(new_primary_affinity, bl);
+    ::encode(new_primary_affinity_cost, bl);
     ::encode(new_erasure_code_profiles, bl);
     ::encode(old_erasure_code_profiles, bl);
     ENCODE_FINISH(bl); // client-usable data
@@ -578,6 +577,7 @@ void OSDMap::Incremental::decode(bufferlist::iterator& bl)
       ::decode(new_primary_affinity, bl);
     else
       new_primary_affinity.clear();
+    ::decode(new_primary_affinity_cost, bl);
     if (struct_v >= 3) {
       ::decode(new_erasure_code_profiles, bl);
       ::decode(old_erasure_code_profiles, bl);
@@ -861,6 +861,8 @@ void OSDMap::set_max_osd(int m)
   osd_uuid->resize(m);
   if (osd_primary_affinity)
     osd_primary_affinity->resize(m, CEPH_OSD_DEFAULT_PRIMARY_AFFINITY);
+  if (osd_primary_affinity_cost)
+    osd_primary_affinity_cost->resize(m, CEPH_OSD_DEFAULT_PRIMARY_AFFINITY_COST);
 
   calc_num_osds();
 }
@@ -1006,7 +1008,6 @@ uint64_t OSDMap::get_features(int entity_type, uint64_t *pmask) const
     }
   }
   mask |= CEPH_FEATURE_OSD_PRIMARY_AFFINITY;
-
   if (pmask)
     *pmask = mask;
   return features;
@@ -1230,6 +1231,12 @@ int OSDMap::apply_incremental(const Incremental &inc)
        i != inc.new_primary_affinity.end();
        ++i) {
     set_primary_affinity(i->first, i->second);
+  }
+
+  for (map<int32_t,uint32_t>::const_iterator i = inc.new_primary_affinity_cost.begin();
+       i != inc.new_primary_affinity_cost.end();
+       ++i) {
+    set_primary_affinity_cost(i->first, i->second);
   }
 
   // erasure_code_profiles
@@ -1469,6 +1476,95 @@ void OSDMap::_raw_to_up_osds(const pg_pool_t& pool, const vector<int>& raw,
   }
 }
 
+void OSDMap::_apply_primary_affinity_cost(ps_t seed,const pg_pool_t& pool,
+				     vector<int> *osds,
+				     int *primary) const
+{
+  // do we have any non-default primary_affinity_cost values for these osds?
+  if (!osd_primary_affinity_cost)
+    return;
+
+  bool any = false;
+  for (vector<int>::const_iterator p = osds->begin(); p != osds->end(); ++p) {
+    if (*p != CRUSH_ITEM_NONE &&
+	(*osd_primary_affinity_cost)[*p] != CEPH_OSD_DEFAULT_PRIMARY_AFFINITY_COST) {
+      any = true;
+    }
+  }
+  if (!any)
+    return;
+
+  int pos = -1;
+
+/*
+  unsigned int max = 0;
+  for (unsigned i = 0; i < osds->size(); ++i) {
+    int o = (*osds)[i];
+    if (o == CRUSH_ITEM_NONE)
+      continue;
+    unsigned a = (*osd_primary_affinity_cost)[o];
+    if(a > max) {
+      max = a;
+      pos = i;
+    }
+      
+  }
+*/
+  vector<int> osd_sum_cost(osds->size());
+  float sum = 0.0;
+  for (unsigned i = 0; i < osds->size(); ++i) {
+    int o = (*osds)[i];
+    if (o == CRUSH_ITEM_NONE)
+      continue;
+    unsigned a = (*osd_primary_affinity_cost)[o];
+    sum = sum + a; 
+  }
+  int val = 0;
+  for (unsigned i = 0; i < osds->size(); ++i) {
+    int o = (*osds)[i];
+    if (o == CRUSH_ITEM_NONE)
+      continue;
+    unsigned a = (*osd_primary_affinity_cost)[o];
+    val += (a/sum)*CEPH_OSD_MAX_PRIMARY_AFFINITY_COST;
+    osd_sum_cost[i] = val; 
+  }
+
+  unsigned int hash = (crush_hash32(CRUSH_HASH_RJENKINS1,
+                        seed) >> 16 );
+
+  for (unsigned i = 0; i < osds->size(); ++i) {
+    int o = (*osds)[i];
+    if (o == CRUSH_ITEM_NONE)
+      continue;
+    unsigned int cost = osd_sum_cost[i];
+    if ( hash  >= cost) {
+      // we chose not to use this primary.  note it anyway as a
+      // fallback in case we don't pick anyone else, but keep looking.
+      if (pos < 0)
+        pos = i;
+    } else {
+      pos = i;
+      break;
+    }
+  }
+
+  if (pos < 0)
+    return;
+
+  *primary = (*osds)[pos];
+
+  if (pool.can_shift_osds() && pos > 0) {
+    // move the new primary to the front.
+    for (int i = pos; i > 0; --i) {
+      (*osds)[i] = (*osds)[i-1];
+    }
+    (*osds)[0] = *primary;
+  }
+}
+
+
+
+
 void OSDMap::_apply_primary_affinity(ps_t seed,
 				     const pg_pool_t& pool,
 				     vector<int> *osds,
@@ -1582,6 +1678,7 @@ void OSDMap::pg_to_raw_up(pg_t pg, vector<int> *up, int *primary) const
   _pg_to_osds(*pool, pg, &raw, primary, &pps);
   _raw_to_up_osds(*pool, raw, up, primary);
   _apply_primary_affinity(pps, *pool, up, primary);
+  _apply_primary_affinity_cost(pps,*pool, up, primary);
 }
   
 void OSDMap::_pg_to_up_acting_osds(const pg_t& pg, vector<int> *up, int *up_primary,
@@ -1608,6 +1705,7 @@ void OSDMap::_pg_to_up_acting_osds(const pg_t& pg, vector<int> *up, int *up_prim
   _pg_to_osds(*pool, pg, &raw, &_up_primary, &pps);
   _raw_to_up_osds(*pool, raw, &_up, &_up_primary);
   _apply_primary_affinity(pps, *pool, &_up, &_up_primary);
+  _apply_primary_affinity_cost(pps,*pool, &_up, &_up_primary);
   _get_temp_osds(*pool, pg, &_acting, &_acting_primary);
   if (_acting.empty()) {
     _acting = _up;
@@ -1805,7 +1903,12 @@ void OSDMap::encode(bufferlist& bl, uint64_t features) const
       vector<__u32> v;
       ::encode(v, bl);
     }
-
+    if (osd_primary_affinity_cost) {
+      ::encode(*osd_primary_affinity_cost, bl);
+    } else {
+      vector<__u32> v;
+      ::encode(v, bl);
+    }
     // crush
     bufferlist cbl;
     crush->encode(cbl);
@@ -1952,6 +2055,7 @@ void OSDMap::decode_classic(bufferlist::iterator& p)
     osd_addrs->hb_front_addr.resize(osd_addrs->hb_back_addr.size());
 
   osd_primary_affinity.reset();
+  osd_primary_affinity_cost.reset();
 
   post_decode();
 }
@@ -2004,6 +2108,10 @@ void OSDMap::decode(bufferlist::iterator& bl)
     } else {
       osd_primary_affinity.reset();
     }
+    osd_primary_affinity_cost.reset(new vector<__u32>);
+    ::decode(*osd_primary_affinity_cost, bl);
+    if (osd_primary_affinity_cost->empty())
+    	osd_primary_affinity_cost.reset();
 
     // crush
     bufferlist cbl;
@@ -2275,6 +2383,7 @@ void OSDMap::print(ostream& out) const
       out << " weight " << get_weightf(i);
       if (get_primary_affinity(i) != CEPH_OSD_DEFAULT_PRIMARY_AFFINITY)
 	out << " primary_affinity " << get_primary_affinityf(i);
+      out << " primary_affinity_cost " << get_primary_affinity_costf(i);
       const osd_info_t& info(get_info(i));
       out << " " << info;
       out << " " << get_addr(i) << " " << get_cluster_addr(i) << " " << get_hb_back_addr(i)

@@ -142,6 +142,8 @@ public:
     map<pg_t,vector<int32_t> > new_pg_temp;     // [] to remove
     map<pg_t, int32_t> new_primary_temp;            // [-1] to remove
     map<int32_t,uint32_t> new_primary_affinity;
+    map<int32_t,uint32_t> new_primary_affinity_cost;
+    map<int32_t,uint32_t> new_node_cost;
     map<int32_t,epoch_t> new_up_thru;
     map<int32_t,pair<epoch_t,epoch_t> > new_last_clean_interval;
     map<int32_t,epoch_t> new_lost;
@@ -225,6 +227,7 @@ private:
   ceph::shared_ptr< map<pg_t,vector<int32_t> > > pg_temp;  // temp pg mapping (e.g. while we rebuild)
   ceph::shared_ptr< map<pg_t,int32_t > > primary_temp;  // temp primary mapping (e.g. while we rebuild)
   ceph::shared_ptr< vector<__u32> > osd_primary_affinity; ///< 16.16 fixed point, 0x10000 = baseline
+  ceph::shared_ptr< vector<__u32> > osd_primary_affinity_cost; ///< 16.16 fixed point, 0x10000 = baseline
 
   map<int64_t,pg_pool_t> pools;
   map<int64_t,string> pool_name;
@@ -375,7 +378,22 @@ public:
   float get_primary_affinityf(int o) const {
     return (float)get_primary_affinity(o) / (float)CEPH_OSD_MAX_PRIMARY_AFFINITY;
   }
-
+  void set_primary_affinity_cost(int o, int w) {
+    assert(o < max_osd);
+    if (!osd_primary_affinity_cost)
+      osd_primary_affinity_cost.reset(new vector<__u32>(max_osd,
+						   CEPH_OSD_DEFAULT_PRIMARY_AFFINITY_COST));
+    (*osd_primary_affinity_cost)[o] = w;
+  }
+  unsigned get_primary_affinity_cost(int o) const {
+    assert(o < max_osd);
+    if (!osd_primary_affinity_cost)
+      return CEPH_OSD_DEFAULT_PRIMARY_AFFINITY_COST;
+    return (*osd_primary_affinity_cost)[o];
+  }
+  float get_primary_affinity_costf(int o) const {
+    return (float)get_primary_affinity_cost(o) / (float)CEPH_OSD_MAX_PRIMARY_AFFINITY_COST;
+  }
   bool has_erasure_code_profile(const string &name) const {
     map<string,map<string,string> >::const_iterator i =
       erasure_code_profiles.find(name);
@@ -602,6 +620,8 @@ private:
   void _remove_nonexistent_osds(const pg_pool_t& pool, vector<int>& osds) const;
 
   void _apply_primary_affinity(ps_t seed, const pg_pool_t& pool,
+			       vector<int> *osds, int *primary) const;
+  void _apply_primary_affinity_cost(ps_t seed,const pg_pool_t& pool,
 			       vector<int> *osds, int *primary) const;
 
   /// pg -> (up osd list)

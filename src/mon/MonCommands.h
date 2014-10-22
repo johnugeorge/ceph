@@ -532,6 +532,11 @@ COMMAND("osd primary-affinity " \
 	"type=CephFloat,name=weight,range=0.0|1.0", \
 	"adjust osd primary-affinity from 0.0 <= <weight> <= 1.0", \
 	"osd", "rw", "cli,rest")
+COMMAND("osd primary-affinity-cost " \
+	"name=id,type=CephOsdName " \
+	"type=CephFloat,name=weight,range=0.0|100.0", \
+	"adjust osd primary-affinity-cost from 0.0 <= <weight> <= 100.0", \
+	"osd", "rw", "cli,rest")
 COMMAND("osd lost " \
 	"name=id,type=CephInt,range=0 " \
 	"name=sure,type=CephChoices,strings=--yes-i-really-mean-it,req=false", \

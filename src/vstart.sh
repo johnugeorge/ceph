@@ -224,11 +224,13 @@ else
     echo "** going verbose **"
     CMONDEBUG='
 	debug mon = 20
+	debug default = 20
+	debug rados = 20
         debug paxos = 20
         debug auth = 20
-        debug ms = 1'
+        debug ms = 20'
     COSDDEBUG='
-        debug ms = 1
+        debug ms = 20
         debug osd = 25
         debug objecter = 20
         debug monc = 20
@@ -343,6 +345,7 @@ if [ "$start_mon" -eq 1 ]; then
         rgw frontends = fastcgi, civetweb port=$CEPH_RGW_PORT
         filestore fd cache size = 32
         run dir = $CEPH_OUT_DIR
+	mon osd allow primary affinity = true
 EOF
 if [ "$cephx" -eq 1 ] ; then
 cat <<EOF >> $conf_fn

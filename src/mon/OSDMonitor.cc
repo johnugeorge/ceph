@@ -4936,7 +4936,37 @@ bool OSDMonitor::prepare_command_impl(MMonCommand *m,
                                                 get_last_committed() + 1));
       return true;
     }
-  } else if (prefix == "osd reweight") {
+  } else if (prefix == "osd primary-affinity-cost") {
+    int64_t id;
+    if (!cmd_getval(g_ceph_context, cmdmap, "id", id)) {
+      ss << "invalid osd id value '"
+         << cmd_vartype_stringify(cmdmap["id"]) << "'";
+      err = -EINVAL;
+      goto reply;
+    }
+    double w;
+    if (!cmd_getval(g_ceph_context, cmdmap, "weight", w)) {
+      ss << "unable to parse 'weight' value '"
+           << cmd_vartype_stringify(cmdmap["weight"]) << "'";
+      err = -EINVAL;
+      goto reply;
+    }
+    long ww = (int)((double)CEPH_OSD_MAX_PRIMARY_AFFINITY_COST*w);
+    if (ww < 0L) {
+      ss << "weight must be >= 0";
+      err = -EINVAL;
+      goto reply;
+    }
+    if (osdmap.exists(id)) {
+      pending_inc.new_primary_affinity_cost[id] = ww;
+      ss << "set osd." << id << " primary-affinity-cost to " << w << " (" << ios::hex << ww << ios::dec << ")";
+      getline(ss, rs);
+      wait_for_finished_proposal(new Monitor::C_Command(mon, m, 0, rs,
+                                                get_last_committed() + 1));
+      return true;
+    }
+
+   } else if (prefix == "osd reweight") {
     int64_t id;
     if (!cmd_getval(g_ceph_context, cmdmap, "id", id)) {
       ss << "unable to parse osd id value '"
